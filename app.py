@@ -2,6 +2,7 @@
 
 import random
 import sqlite3
+import time
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import db
+import fun
 import stats
 
 st.set_page_config(page_title="Beer Tasting", page_icon="🍺", layout="wide")
@@ -98,6 +100,11 @@ blind = st.sidebar.toggle(
 if blind != is_blind():
     db.set_setting("blind", "1" if blind else "0")
     st.rerun()
+
+funny = st.sidebar.toggle("Fun animations", value=db.get_setting("fun", "1") == "1",
+                         help="A silly reaction every time a score is entered.")
+if funny != (db.get_setting("fun", "1") == "1"):
+    db.set_setting("fun", "1" if funny else "0")
 
 st.sidebar.download_button(
     "⬇️ Backup (CSV)", db.export_long().to_csv(index=False),
@@ -227,6 +234,7 @@ def page_scoring():
     grid = grid.reset_index(drop=True)
 
     beer_ids, pid_by_name = beers["id"].tolist(), dict(zip(people["name"], people["id"]))
+    stored = r.set_index(["participant_id", "beer_id"])["score"].to_dict()
     # Key changes whenever beers/participants change, so stale edits never leak onto other
     # rows, and after a rejected entry, so the grid reloads from the database
     resets = st.session_state.setdefault("score_resets", 0)
@@ -247,8 +255,12 @@ def page_scoring():
                         f"“{value}” for {name} is not a score between 1 and 10, not saved.")
                     st.session_state.score_resets += 1
                     continue
-                db.set_rating(pid_by_name[name], beer_ids[int(row)],
-                              None if score is None else round(score, 2))
+                pid, bid = pid_by_name[name], beer_ids[int(row)]
+                score = None if score is None else round(score, 2)
+                # The editor re-sends all earlier edits too; only react to the new one
+                if score is not None and score != stored.get((pid, bid)):
+                    st.session_state.fun_reaction = (name, labels[bid], score)
+                db.set_rating(pid, bid, score)
 
     st.caption("Click a cell, type a score from 1 to 10 (decimals with . or , ), press Enter. "
                "Every change is saved immediately. Clear a cell to remove a score.")
@@ -270,6 +282,16 @@ def page_scoring():
     )
     total = len(beers) * len(people)
     st.progress(len(r) / total, text=f"{len(r)} of {total} scores entered")
+
+    if (reaction := st.session_state.pop("fun_reaction", None)) and funny:
+        st.session_state.fun_count = st.session_state.get("fun_count", 0) + 1
+        fun.announce(*reaction)
+        st.session_state.fun_html = (fun.animation(reaction[2], st.session_state.fun_count),
+                                     time.time())
+    # Streamlit reruns again right after an edit; keep rendering the same animation for a
+    # few seconds so that second run doesn't cut it off
+    if funny and (shown := st.session_state.get("fun_html")) and time.time() - shown[1] < 3:
+        st.html(shown[0])
 
 
 # --- Stats ------------------------------------------------------------------
